@@ -1,0 +1,1 @@
+/home/oscar/Projects/Academic/dev_ws/build/xarm_msgs/ament_cmake_environment_hooks/local_setup.zsh

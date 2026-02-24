@@ -1,0 +1,1 @@
+/home/oscar/Projects/Academic/dev_ws/src/xarm_ros2/xarm_moveit_config/launch/xarm7_mirror_moveit_realmove.launch.py

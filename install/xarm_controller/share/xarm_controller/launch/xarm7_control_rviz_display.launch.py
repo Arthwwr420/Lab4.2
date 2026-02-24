@@ -1,0 +1,1 @@
+/home/oscar/Projects/Academic/dev_ws/src/xarm_ros2/xarm_controller/launch/xarm7_control_rviz_display.launch.py
