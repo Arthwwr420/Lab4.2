@@ -8,6 +8,7 @@ from geometry_msgs.msg import TwistStamped
 from tf2_ros import Buffer, TransformListener
 from pynput import keyboard
 from enum import Enum
+from std_msgs.msg import Float32MultiArray
 
 
 class RobotState(Enum):
@@ -25,39 +26,35 @@ class CircleServoXArmLite6(Node):
     def __init__(self):
         super().__init__("circle_servo_xarm_lite6")
 
-        # ---------------------------
         # State machine
-        # ---------------------------
         self.robot_state = RobotState.RUNNING
 
-        # ---------------------------
         # Publisher to MoveIt Servo
-        # ---------------------------
         self.servo_pub = self.create_publisher(
             TwistStamped, "/servo_server/delta_twist_cmds", 10
         )
 
-        # ---------------------------
+        #Publisher to PID controller
+        self.pid_srv = self.create_publisher( Float32MultiArray, "/target_pos",20)
+
+
         # TF for current EE pose
-        # ---------------------------
         self.tf_buffer = Buffer()
         self.tf_listener = TransformListener(self.tf_buffer, self)
 
-        # ---------------------------
         # xArm Lite 6-friendly defaults
-        # ---------------------------
-        self.radius = 0.08          # 4 cm circle
-        self.frequency = 0.10       # 0.10 Hz -> ~10s per loop
+        self.radius = 0.035          # 4 cm circle
+        self.frequency = 0.15       # 0.10 Hz -> ~10s per loop
         self.plane = "xy"           # draw in XY plane
         self.hold_z = True          # keep z constant (use center.z)
 
         # PD gains (task-space)
-        self.kp = np.array([2.5, 2.5, 2.5])
-        self.kd = np.array([0.6, 0.6, 0.6])
+        self.kp = np.array([3.0, 3.0, 3.0])
+        self.kd = np.array([0.4, 0.4, 0.4])
 
         # Deadband & saturation
         self.epsilon = np.array([0.002, 0.002, 0.002])  # 2 mm
-        self.max_speed = 0.16      # m/s per axis (conservative for Lite 6)
+        self.max_speed = 0.20      # m/s per axis (conservative for Lite 6)
 
         # Home position (edit to your preferred safe home)
         self.home_position = np.array([0.227, 0.00, 0.468])
@@ -83,9 +80,7 @@ class CircleServoXArmLite6(Node):
             "CircleServoXArmLite6 initialized. 'p'=pause/resume, 'h'=home."
         )
 
-    # ---------------------------
     # Keyboard controls
-    # ---------------------------
     def _start_keyboard(self):
         def on_press(key):
             if hasattr(key, "char") and key.char == "p":
@@ -107,9 +102,7 @@ class CircleServoXArmLite6(Node):
         self.keyboard_listener = keyboard.Listener(on_press=on_press)
         self.keyboard_listener.start()
 
-    # ---------------------------
     # TF pose read (position only)
-    # ---------------------------
     def _read_pose(self):
         try:
             trans = self.tf_buffer.lookup_transform(
@@ -127,39 +120,47 @@ class CircleServoXArmLite6(Node):
                 self.last_info_time = now
             return None
 
-    # ---------------------------
-    # Heart target generator
-    # ---------------------------
+    
     def _heart_target(self, t_sec: float):
         cx, cy, cz = self.center
         w = 2.0 * math.pi * self.frequency
 
-        # soft-start ramp (0 -> 1 in first 2 seconds)
+        # soft-start ramp (0 -> 1 en 2s)
         ramp = min(max(t_sec / 2.0, 0.0), 1.0)
 
-        a = ramp * self.radius * 1.0/16.0 * (16*math.sin(w * t_sec)**3)
-        b = ramp * self.radius * 1.0/16.0 * (13*math.cos(w*t_sec) - 5*math.cos(2*w*t_sec) - 2*math.cos(3*w*t_sec) - math.cos(4*w*t_sec))
+        theta = w * t_sec
 
+        # alterna automáticamente cada vuelta (2π)
+        loop_idx = int(theta // (2.0 * math.pi))
+        mode = "h" if (loop_idx % 2 == 0) else "v"
+
+        # ∞ horizontal: x=sin(t), y=sin(2t)
+        # ∞ vertical:   x=sin(2t), y=sin(t)
+        if mode == "h":
+            a = ramp * self.radius * math.sin(theta)
+            b = ramp * self.radius * math.sin(2.0 * theta)
+        else:
+            a = ramp * self.radius * math.sin(2.0 * theta)
+            b = ramp * self.radius * math.sin(theta)
+
+        # ubicar en el plano elegido
         if self.plane == "xy":
             x = cx + a
             y = cy + b
-            z = cz if self.hold_z else cz
+            z = cz
         elif self.plane == "xz":
             x = cx + a
             y = cy
-            z = (cz + b) if not self.hold_z else cz
+            z = cz if self.hold_z else (cz + b)
         elif self.plane == "yz":
             x = cx
             y = cy + a
-            z = (cz + b) if not self.hold_z else cz
+            z = cz if self.hold_z else (cz + b)
         else:
             x, y, z = cx + a, cy + b, cz
 
         return np.array([x, y, z], dtype=float)
-
-    # ---------------------------
     # Publish TwistStamped
-    # ---------------------------
     def _publish_twist(self, v_xyz: np.ndarray):
         cmd = TwistStamped()
         cmd.header.stamp = self.get_clock().now().to_msg()
@@ -175,9 +176,12 @@ class CircleServoXArmLite6(Node):
     def _publish_zero(self):
         self._publish_twist(np.zeros(3))
 
-    # ---------------------------
+    def _publish_target(self,target: np.ndarray):
+        msg = Float32MultiArray()
+        msg.data = target.tolist()
+        self.pid_srv.publish(msg)
+
     # PD servo step
-    # ---------------------------
     def _servo_to(self, target_pos: np.ndarray):
         current = self._read_pose()
         if current is None:
@@ -210,9 +214,7 @@ class CircleServoXArmLite6(Node):
             )
             self.last_info_time = now
 
-    # ---------------------------
     # Main loop / state machine
-    # ---------------------------
     def _loop(self):
         # Initialize circle center from current EE pose
         if self.center is None:
@@ -256,6 +258,7 @@ class CircleServoXArmLite6(Node):
         t = (self.get_clock().now() - self.start_time).nanoseconds / 1e9
         target = self._heart_target(t)
         self._servo_to(target)
+        self._publish_target(target)
 
 
 def main(args=None):

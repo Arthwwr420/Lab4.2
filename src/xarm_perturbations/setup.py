@@ -31,6 +31,7 @@ setup(
         'circle_maker = xarm_perturbations.circle_maker:main',
         'heart = xarm_perturbations.heart:main',
         'position_controller = xarm_perturbations.position_controller:main',
+        'plotter = xarm_perturbations.plotter:main',
     	],
     },
 

@@ -4,6 +4,7 @@ import rclpy
 from rclpy.node import Node
 from geometry_msgs.msg import TwistStamped
 from tf2_ros import Buffer, TransformListener
+from std_msgs.msg import Float32MultiArray
 
 
 class CartesianPIDController(Node):
@@ -47,22 +48,21 @@ class CartesianPIDController(Node):
         self.i_clamp = float(self.get_parameter("i_clamp").value)
         rate_hz = float(self.get_parameter("rate_hz").value)
 
-        # ---------------------------
         # Pub + TF (same style as your heart.py)
-        # ---------------------------
         self.pub = self.create_publisher(TwistStamped, self.output_topic, 10)
         self.tf_buffer = Buffer()
         self.tf_listener = TransformListener(self.tf_buffer, self)
 
-        # ---------------------------
         # PID state
-        # ---------------------------
         self.prev_error = np.zeros(3, dtype=float)
         self.i_term = np.zeros(3, dtype=float)
         self.prev_time = self.get_clock().now()
         self.last_warn_time = self.get_clock().now()
 
         self.timer = self.create_timer(1.0 / max(rate_hz, 1.0), self._loop)
+        
+        # Target position readeer
+        self.target_sub = self.create_subscription( Float32MultiArray, '/target_pos', self._listen_pid,20)
 
         self.get_logger().info(
             f"CartesianPIDController OK\n"
@@ -72,6 +72,12 @@ class CartesianPIDController(Node):
             f" kp={self.kp} ki={self.ki} kd={self.kd}\n"
             f" deadband={self.deadband} max_speed={self.max_speed} i_clamp={self.i_clamp}"
         )
+
+    # Get desired position from heart.py
+    def _listen_pid(self,msg):
+        array = np.array(msg.data)
+        self.target_xyz = array
+
 
     def _read_pose(self):
         """
